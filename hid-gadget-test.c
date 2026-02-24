@@ -9,8 +9,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <termios.h>
+#include <sys/select.h>
 
 #define BUF_LEN 512
+
+#define FRAME_BYTE 0xFD
+#define ACK_BYTE   0xAC
+#define ACK_TIMEOUT_US 500000  /* 500ms */
 
 struct options {
 	const char    *opt;
@@ -346,6 +352,101 @@ void print_options(char c)
 	}
 }
 
+/* Check if device path looks like a serial port */
+int is_serial_device(const char *path)
+{
+	return (strstr(path, "serial") != NULL ||
+	        strstr(path, "ttyS") != NULL ||
+	        strstr(path, "ttyAMA") != NULL ||
+	        strstr(path, "ttyUSB") != NULL);
+}
+
+/* Configure serial port: 115200 baud, 8N1, raw mode */
+int configure_serial(int fd)
+{
+	struct termios tty;
+
+	if (tcgetattr(fd, &tty) != 0) {
+		perror("tcgetattr");
+		return -1;
+	}
+
+	cfsetospeed(&tty, B115200);
+	cfsetispeed(&tty, B115200);
+
+	/* 8N1 */
+	tty.c_cflag &= ~PARENB;
+	tty.c_cflag &= ~CSTOPB;
+	tty.c_cflag &= ~CSIZE;
+	tty.c_cflag |= CS8;
+
+	/* No flow control */
+	tty.c_cflag &= ~CRTSCTS;
+
+	/* Enable receiver, local mode */
+	tty.c_cflag |= CREAD | CLOCAL;
+
+	/* Raw mode */
+	tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+	tty.c_iflag &= ~(IXON | IXOFF | IXANY);
+	tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL);
+	tty.c_oflag &= ~OPOST;
+
+	/* Read with timeout */
+	tty.c_cc[VMIN] = 0;
+	tty.c_cc[VTIME] = 5;  /* 500ms timeout */
+
+	if (tcsetattr(fd, TCSANOW, &tty) != 0) {
+		perror("tcsetattr");
+		return -1;
+	}
+
+	return 0;
+}
+
+/* Send framed report over serial and wait for ACK */
+int serial_send_report(int fd, const char *report, int len)
+{
+	unsigned char frame_byte = FRAME_BYTE;
+	unsigned char ack;
+	fd_set rfds;
+	struct timeval tv;
+	int retval;
+
+	/* Send frame byte */
+	if (write(fd, &frame_byte, 1) != 1) {
+		perror("serial write frame");
+		return -1;
+	}
+
+	/* Send report */
+	if (write(fd, report, len) != len) {
+		perror("serial write report");
+		return -1;
+	}
+
+	/* Wait for ACK with timeout */
+	FD_ZERO(&rfds);
+	FD_SET(fd, &rfds);
+	tv.tv_sec = 0;
+	tv.tv_usec = ACK_TIMEOUT_US;
+
+	retval = select(fd + 1, &rfds, NULL, NULL, &tv);
+	if (retval > 0) {
+		if (read(fd, &ack, 1) == 1 && ack == ACK_BYTE) {
+			return 0;
+		}
+		fprintf(stderr, "Bad ACK byte\n");
+		return -1;
+	} else if (retval == 0) {
+		fprintf(stderr, "ACK timeout\n");
+		return -1;
+	} else {
+		perror("select (ACK)");
+		return -1;
+	}
+}
+
 int main(int argc, const char *argv[])
 {
 	const char *filename = NULL;
@@ -357,6 +458,7 @@ int main(int argc, const char *argv[])
 	int hold = 0;
 	fd_set rfds;
 	int retval, i;
+	int serial_mode = 0;
 
 	if (argc < 3) {
 		fprintf(stderr, "Usage: %s devname mouse|keyboard|joystick\n",
@@ -373,19 +475,29 @@ int main(int argc, const char *argv[])
 	  return 2;
 
 	filename = argv[1];
+	serial_mode = is_serial_device(filename);
 
-	if ((fd = open(filename, O_RDWR, 0666)) == -1) {
+	if ((fd = open(filename, O_RDWR | O_NOCTTY, 0666)) == -1) {
 		perror(filename);
 		return 3;
+	}
+
+	if (serial_mode) {
+		if (configure_serial(fd) != 0) {
+			fprintf(stderr, "Failed to configure serial port\n");
+			close(fd);
+			return 3;
+		}
 	}
 
 	while (42) {
 
 		FD_ZERO(&rfds);
 		FD_SET(STDIN_FILENO, &rfds);
-		FD_SET(fd, &rfds);
+		if (!serial_mode)
+			FD_SET(fd, &rfds);
 
-		retval = select(fd + 1, &rfds, NULL, NULL, NULL);
+		retval = select((serial_mode ? STDIN_FILENO : fd) + 1, &rfds, NULL, NULL, NULL);
 		if (retval == -1 && errno == EINTR)
 			continue;
 		if (retval < 0) {
@@ -393,7 +505,7 @@ int main(int argc, const char *argv[])
 			return 4;
 		}
 
-		if (FD_ISSET(fd, &rfds)) {
+		if (!serial_mode && FD_ISSET(fd, &rfds)) {
 			cmd_len = read(fd, buf, BUF_LEN - 1);
 			printf("recv report:");
 			for (i = 0; i < cmd_len; i++)
@@ -422,15 +534,29 @@ int main(int argc, const char *argv[])
 			if (to_send == -1)
 				break;
 
-			if (write(fd, report, to_send) != to_send) {
-				perror(filename);
-				return 5;
-			}
-			if (!hold) {
-				memset(report, 0x0, sizeof(report));
+			if (serial_mode) {
+				if (serial_send_report(fd, report, to_send) != 0) {
+					perror(filename);
+					return 5;
+				}
+				if (!hold) {
+					memset(report, 0x0, sizeof(report));
+					if (serial_send_report(fd, report, to_send) != 0) {
+						perror(filename);
+						return 6;
+					}
+				}
+			} else {
 				if (write(fd, report, to_send) != to_send) {
 					perror(filename);
-					return 6;
+					return 5;
+				}
+				if (!hold) {
+					memset(report, 0x0, sizeof(report));
+					if (write(fd, report, to_send) != to_send) {
+						perror(filename);
+						return 6;
+					}
 				}
 			}
 		}
