@@ -34,13 +34,13 @@ fi
 
 if grep -q "console=serial0" "$CMDLINE" 2>/dev/null; then
   echo "Removing serial console from $CMDLINE..."
-  sudo sed -i 's/console=serial0,[0-9]* //g' "$CMDLINE"
+  sudo sed -i -E 's/console=serial0,[0-9]*[ ]?//g' "$CMDLINE"
 fi
 if grep -q "console=ttyS0" "$CMDLINE" 2>/dev/null; then
-  sudo sed -i 's/console=ttyS0,[0-9]* //g' "$CMDLINE"
+  sudo sed -i -E 's/console=ttyS0,[0-9]*[ ]?//g' "$CMDLINE"
 fi
 if grep -q "console=ttyAMA0" "$CMDLINE" 2>/dev/null; then
-  sudo sed -i 's/console=ttyAMA0,[0-9]* //g' "$CMDLINE"
+  sudo sed -i -E 's/console=ttyAMA0,[0-9]*[ ]?//g' "$CMDLINE"
 fi
 
 # Compile hid-gadget-test

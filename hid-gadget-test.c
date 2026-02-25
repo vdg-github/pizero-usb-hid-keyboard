@@ -255,11 +255,13 @@ int mouse_fill_report(char report[8], char buf[BUF_LEN], int *hold)
 			continue;
 
 		if (!(tok[0] == '-' && tok[1] == '-') && mvt < 2) {
+			long val;
 			errno = 0;
-			report[1 + mvt++] = (char)strtol(tok, NULL, 0);
+			val = strtol(tok, NULL, 0);
 			if (errno != 0) {
 				fprintf(stderr, "Bad value:'%s'\n", tok);
-				report[1 + mvt--] = 0;
+			} else {
+				report[1 + mvt++] = (char)val;
 			}
 			continue;
 		}
@@ -307,11 +309,13 @@ int joystick_fill_report(char report[8], char buf[BUF_LEN], int *hold)
 			continue;
 
 		if (!(tok[0] == '-' && tok[1] == '-') && mvt < 3) {
+			long val;
 			errno = 0;
-			report[mvt++] = (char)strtol(tok, NULL, 0);
+			val = strtol(tok, NULL, 0);
 			if (errno != 0) {
 				fprintf(stderr, "Bad value:'%s'\n", tok);
-				report[mvt--] = 0;
+			} else {
+				report[mvt++] = (char)val;
 			}
 			continue;
 		}
@@ -517,7 +521,7 @@ int main(int argc, const char *argv[])
 			memset(report, 0x0, sizeof(report));
 			cmd_len = read(STDIN_FILENO, buf, BUF_LEN - 1);
 
-			if (cmd_len == 0)
+			if (cmd_len <= 0)
 				break;
 
 			buf[cmd_len - 1] = '\0';
