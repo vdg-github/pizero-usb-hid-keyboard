@@ -7,4 +7,8 @@ else
   DEV=/dev/hidg0
 fi
 
-echo "$@" | /home/pi/pizero-usb-hid-keyboard/hid-gadget-test "$DEV" keyboard
+# Send each key sequentially to avoid simultaneously pressing all keys
+for key in "$@"; do
+  echo "$key" | /home/pi/pizero-usb-hid-keyboard/hid-gadget-test "$DEV" keyboard
+  sleep 0.05
+done
