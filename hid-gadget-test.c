@@ -13,6 +13,9 @@
 
 #define BUF_LEN 512
 
+/* Forward declarations */
+int serial_send_report(int fd, const char *report, int len);
+
 #define FRAME_BYTE 0xFD
 #define ACK_BYTE 0xAC
 #define ACK_TIMEOUT_US 500000 /* 500ms */
@@ -107,6 +110,111 @@ static struct options kval[] = {
                                        // not work on standard keyboard, they
                                        // need a different USB descriptor
     {.opt = "volume-down", .val = 0x81}, {.opt = NULL}};
+
+/* Mapping from ASCII character to HID keycode + shift flag.
+ * Index is ASCII value (0-127). High bit (0x80) means shift is needed. */
+static unsigned char char_to_hid[128] = {
+    0,    0,    0,    0,    0,    0,    0,    0,    /* 0-7 */
+    0x2a, 0x2b, 0x28, 0,    0,    0x28, 0,    0,    /* 8-15: BS=8,TAB=9,LF=10,CR=13 */
+    0,    0,    0,    0,    0,    0,    0,    0,    /* 16-23 */
+    0,    0,    0,    0x29, 0,    0,    0,    0,    /* 24-31: ESC=27 */
+    0x2c,                                           /* 32 space */
+    0x1e | 0x80,                                    /* 33 ! */
+    0x34 | 0x80,                                    /* 34 " */
+    0x20 | 0x80,                                    /* 35 # */
+    0x21 | 0x80,                                    /* 36 $ */
+    0x22 | 0x80,                                    /* 37 % */
+    0x24 | 0x80,                                    /* 38 & */
+    0x34,                                           /* 39 ' */
+    0x26 | 0x80,                                    /* 40 ( */
+    0x27 | 0x80,                                    /* 41 ) */
+    0x25 | 0x80,                                    /* 42 * */
+    0x2e | 0x80,                                    /* 43 + */
+    0x36,                                           /* 44 , */
+    0x2d,                                           /* 45 - */
+    0x37,                                           /* 46 . */
+    0x38,                                           /* 47 / */
+    0x27, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, /* 48-55: 0-7 */
+    0x25, 0x26,                                     /* 56-57: 8-9 */
+    0x33 | 0x80,                                    /* 58 : */
+    0x33,                                           /* 59 ; */
+    0x36 | 0x80,                                    /* 60 < */
+    0x2e,                                           /* 61 = */
+    0x37 | 0x80,                                    /* 62 > */
+    0x38 | 0x80,                                    /* 63 ? */
+    0x1f | 0x80,                                    /* 64 @ */
+    0x04 | 0x80, 0x05 | 0x80, 0x06 | 0x80, 0x07 | 0x80, /* A-D */
+    0x08 | 0x80, 0x09 | 0x80, 0x0a | 0x80, 0x0b | 0x80, /* E-H */
+    0x0c | 0x80, 0x0d | 0x80, 0x0e | 0x80, 0x0f | 0x80, /* I-L */
+    0x10 | 0x80, 0x11 | 0x80, 0x12 | 0x80, 0x13 | 0x80, /* M-P */
+    0x14 | 0x80, 0x15 | 0x80, 0x16 | 0x80, 0x17 | 0x80, /* Q-T */
+    0x18 | 0x80, 0x19 | 0x80, 0x1a | 0x80, 0x1b | 0x80, /* U-X */
+    0x1c | 0x80, 0x1d | 0x80,                             /* Y-Z */
+    0x2f,                                           /* 91 [ */
+    0x31,                                           /* 92 \ */
+    0x30,                                           /* 93 ] */
+    0x23 | 0x80,                                    /* 94 ^ */
+    0x2d | 0x80,                                    /* 95 _ */
+    0x35,                                           /* 96 ` */
+    0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, /* a-h */
+    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, /* i-p */
+    0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, /* q-x */
+    0x1c, 0x1d,                                       /* y-z */
+    0x2f | 0x80,                                    /* 123 { */
+    0x31 | 0x80,                                    /* 124 | */
+    0x30 | 0x80,                                    /* 125 } */
+    0x35 | 0x80,                                    /* 126 ~ */
+    0                                               /* 127 DEL */
+};
+
+/* Send a single key press + release for one character */
+int send_char_report(int fd, int serial_mode, unsigned char keycode,
+                     unsigned char modifier) {
+  char report[8];
+  memset(report, 0, sizeof(report));
+  report[0] = modifier;
+  report[2] = keycode;
+
+  if (serial_mode) {
+    if (serial_send_report(fd, report, 8) != 0)
+      return -1;
+    usleep(20000);
+    memset(report, 0, sizeof(report));
+    int retries = 3;
+    while (retries-- > 0) {
+      if (serial_send_report(fd, report, 8) == 0)
+        break;
+      usleep(10000);
+    }
+  } else {
+    if (write(fd, report, 8) != 8)
+      return -1;
+    memset(report, 0, sizeof(report));
+    if (write(fd, report, 8) != 8)
+      return -1;
+  }
+  return 0;
+}
+
+/* Type a string character by character */
+int type_string(int fd, int serial_mode, const char *str, int len) {
+  int i;
+  for (i = 0; i < len; i++) {
+    unsigned char c = (unsigned char)str[i];
+    if (c > 127)
+      continue; /* skip non-ASCII */
+    unsigned char entry = char_to_hid[c];
+    if (entry == 0 && c != 0x08 && c != 0x09 && c != 0x0a && c != 0x0d &&
+        c != 0x1b)
+      continue; /* unmapped */
+    unsigned char keycode = entry & 0x7F;
+    unsigned char modifier = (entry & 0x80) ? 0x02 : 0x00; /* left-shift */
+    if (send_char_report(fd, serial_mode, keycode, modifier) != 0) {
+      fprintf(stderr, "Warning: failed to send char '%c'\n", c);
+    }
+  }
+  return 0;
+}
 
 int keyboard_fill_report(char report[8], char buf[BUF_LEN], int *hold) {
   char *tok = strtok(buf, " ");
@@ -374,7 +482,11 @@ int main(int argc, const char *argv[]) {
   int serial_mode = 0;
 
   if (argc < 3) {
-    fprintf(stderr, "Usage: %s devname mouse|keyboard|joystick\n", argv[0]);
+    fprintf(stderr,
+            "Usage: %s devname mouse|keyboard|joystick\n"
+            "       %s devname --string < textfile\n"
+            "       echo 'hello world' | %s devname --string\n",
+            argv[0], argv[0], argv[0]);
 
     print_options('k');
     print_options('m');
@@ -383,7 +495,11 @@ int main(int argc, const char *argv[]) {
     return 1;
   }
 
-  if (argv[2][0] != 'k' && argv[2][0] != 'm' && argv[2][0] != 'j')
+  int string_mode = (strcmp(argv[2], "--string") == 0 ||
+                     strcmp(argv[2], "-s") == 0);
+
+  if (!string_mode && argv[2][0] != 'k' && argv[2][0] != 'm' &&
+      argv[2][0] != 'j')
     return 2;
 
   filename = argv[1];
@@ -400,6 +516,15 @@ int main(int argc, const char *argv[]) {
       close(fd);
       return 3;
     }
+  }
+
+  /* String mode: read stdin and type each character */
+  if (string_mode) {
+    while ((cmd_len = read(STDIN_FILENO, buf, BUF_LEN)) > 0) {
+      type_string(fd, serial_mode, buf, cmd_len);
+    }
+    close(fd);
+    return 0;
   }
 
   while (42) {

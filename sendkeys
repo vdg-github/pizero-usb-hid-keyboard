@@ -7,8 +7,21 @@ else
   DEV=/dev/hidg0
 fi
 
-# Send each key sequentially to avoid simultaneously pressing all keys
+HID="/home/pi/pizero-usb-hid-keyboard/hid-gadget-test"
+
+# String mode: sendkeys -s "hello world" or echo "text" | sendkeys -s
+if [ "$1" = "-s" ] || [ "$1" = "--string" ]; then
+  shift
+  if [ $# -gt 0 ]; then
+    printf '%s' "$*" | "$HID" "$DEV" --string
+  else
+    "$HID" "$DEV" --string
+  fi
+  exit $?
+fi
+
+# Key mode: send each key sequentially to avoid simultaneously pressing all keys
 for key in "$@"; do
-  echo "$key" | /home/pi/pizero-usb-hid-keyboard/hid-gadget-test "$DEV" keyboard
+  echo "$key" | "$HID" "$DEV" keyboard
   sleep 0.05
 done
