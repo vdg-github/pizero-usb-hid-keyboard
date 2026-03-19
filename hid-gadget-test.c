@@ -14,9 +14,10 @@
 #define BUF_LEN 512
 
 /* Forward declarations */
-int serial_send_report(int fd, const char *report, int len);
+int serial_send_report(int fd, unsigned char frame, const char *report, int len);
 
-#define FRAME_BYTE 0xFD
+#define FRAME_KB    0xFD
+#define FRAME_MOUSE 0xFE
 #define ACK_BYTE 0xAC
 #define ACK_TIMEOUT_US 500000 /* 500ms */
 
@@ -176,13 +177,13 @@ int send_char_report(int fd, int serial_mode, unsigned char keycode,
   report[2] = keycode;
 
   if (serial_mode) {
-    if (serial_send_report(fd, report, 8) != 0)
+    if (serial_send_report(fd, FRAME_KB, report, 8) != 0)
       return -1;
     usleep(20000);
     memset(report, 0, sizeof(report));
     int retries = 3;
     while (retries-- > 0) {
-      if (serial_send_report(fd, report, 8) == 0)
+      if (serial_send_report(fd, FRAME_KB, report, 8) == 0)
         break;
       usleep(10000);
     }
@@ -428,8 +429,9 @@ int configure_serial(int fd) {
 }
 
 /* Send framed report over serial and wait for ACK */
-int serial_send_report(int fd, const char *report, int len) {
-  unsigned char frame_byte = FRAME_BYTE;
+int serial_send_report(int fd, unsigned char frame, const char *report,
+                       int len) {
+  unsigned char frame_byte = frame;
   unsigned char ack;
   fd_set rfds;
   struct timeval tv;
@@ -573,15 +575,17 @@ int main(int argc, const char *argv[]) {
         break;
 
       if (serial_mode) {
-        if (serial_send_report(fd, report, to_send) != 0) {
-          fprintf(stderr, "Warning: failed to send key down report\n");
+        unsigned char frame =
+            (argv[2][0] == 'm') ? FRAME_MOUSE : FRAME_KB;
+        if (serial_send_report(fd, frame, report, to_send) != 0) {
+          fprintf(stderr, "Warning: failed to send report\n");
         }
         if (!hold) {
           usleep(20000);
           memset(report, 0x0, sizeof(report));
           int retries = 3;
           while (retries-- > 0) {
-            if (serial_send_report(fd, report, to_send) == 0)
+            if (serial_send_report(fd, frame, report, to_send) == 0)
               break;
             usleep(10000);
           }
